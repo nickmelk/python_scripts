@@ -7,69 +7,84 @@ class FloatingPointFormat:
         self.exponent = exponent
         self.fraction = fraction
 
-float32 = FloatingPointFormat(127, 8, 23)
-float64 = FloatingPointFormat(1023, 11, 52)
-float128 = FloatingPointFormat(16383, 15, 112)
+float16 = FloatingPointError(15, 5, 10)             # Half-precision
+float32 = FloatingPointFormat(127, 8, 23)           # Single-precision
+float64 = FloatingPointFormat(1023, 11, 52)         # Double-precision
+float128 = FloatingPointFormat(16383, 15, 112)      # Quadruple-precision
+float256 = FloatingPointFormat(262143, 19, 236)     # Octuple-precision
+x86 = FloatingPointFormat(16383, 15, 64)            # x86 extended-precision
 
-def dec_int_to_bin(number: int) -> str:
-    bin = ""
-    if number == 0:
-        bin = "0"
-    while number > 0:
-        bin = str(number%2) + bin
-        number //= 2
-    return bin
+def dec_int_to_bin(number_dec: int) -> str:
+    number_bin = ""
+    if number_dec == 0:
+        number_bin = "0"
+    while number_dec > 0:
+        number_bin = str(number_dec%2) + number_bin
+        number_dec //= 2
+    return number_bin
 
-def bin_to_dec_int(number: str) -> int:
-    decimal = 0
-    for index, bit in enumerate(number[::-1]):
-        decimal += int(bit) * 2**index
-    return decimal
+def bin_to_dec_int(number_bin: str) -> int:
+    number_dec = 0
+    for index, bit in enumerate(number_bin[::-1]):
+        number_dec += int(bit) * 2**index
+    return number_dec
 
-def bin_ieee_754_to_dec(number: str, format: FloatingPointFormat = float32) -> float:
-    sign = 1 if number[0] == '0' else -1
-    exponent = number[1:format.exponent+1]
-    fraction = number[format.exponent+1:]
+def bin_ieee_754_to_dec(number_bin: str, format: FloatingPointFormat = float32) -> float:
+    sign = int(number_bin[0])
+    exponent = number_bin[1:format.exponent+1]
+    fraction = number_bin[format.exponent+1:]
+    
+    if exponent == '1'*format.exponent:
+        if fraction == '0'*format.fraction:
+            return (-1)**sign * float("inf")
+        else:
+            return float("nan")
 
-    exponent_decimal = bin_to_dec_int(exponent) - format.bias
-    if exponent_decimal > len(fraction):
-        fraction = fraction + "0"*(exponent_decimal-len(fraction))
-    fraction = "1." + fraction
-    if exponent_decimal < 0:
-        fraction = "0"*abs(exponent_decimal-1) + fraction
+    exponent_dec = bin_to_dec_int(exponent) - format.bias
+    fraction_dec = Fraction(0)
     for index, bit in enumerate(fraction):
-        if bit == ".":
-            point_index = index
-    point_index = point_index + exponent_decimal
-    fraction = fraction.replace(".", "")
+        fraction_dec += Fraction(bit) * Fraction(1, 2**(index+1))
 
-    integer_part, fractional_part = fraction[:point_index], fraction[point_index:]
-    integer_decimal = bin_to_dec_int(integer_part)
-    fraction_decimal = 0
-    for index, bit in enumerate(fractional_part):
-        fraction_decimal += int(bit) * 2**(-index-1)
-    return sign * (integer_decimal + fraction_decimal)
+    if exponent == '0'*format.exponent:
+        if fraction == '0'*format.fraction:
+            return (-1)**sign * 0.0
+        else:
+            return (-1)**sign * 2**(1-format.bias) * fraction_dec
+    
+    number_dec = (-1)**sign * Fraction(2)**(exponent_dec) * (1+fraction_dec)
+    
+    return number_dec
 
 # this function needs some refactoring
 def dec_to_bin_ieee_754(number: str, format: FloatingPointFormat = float32) -> str:
-    sign_bit = '0' if not '-' in number else '1'
+    sign = '0' if not '-' in number else '1'
     
     if '-' in number:
         number = number.replace('-', '')
 
+    if number == "0.0":
+        number_bin = sign + '0'*format.exponent + '0'*format.fraction
+        return number_bin
+    elif number == "inf":
+        number_bin = sign + '1'*format.exponent + '0'*format.fraction
+        return number_bin
+    elif number == "nan":
+        number_bin = sign + '1'*format.exponent + '1' + '0'*(format.fraction-1)
+        return number_bin
+
     number = Fraction(number)
     integer_part = number.numerator // number.denominator
-    integer_binary = dec_int_to_bin(integer_part)
+    integer_bin = dec_int_to_bin(integer_part)
 
     fractional_part = number - integer_part
-    fractional_binary = ''
+    fractional_bin = ''
     for _ in range(format.fraction+3):
         fractional_part *= 2
         bit = int(fractional_part)
-        fractional_binary += str(bit)
+        fractional_bin += str(bit)
         fractional_part -= bit
 
-    binary_number = integer_binary + '.' + fractional_binary
+    binary_number = integer_bin + '.' + fractional_bin
 
     one_app, was_seen = 0, False
     point_app = 1
@@ -80,11 +95,9 @@ def dec_to_bin_ieee_754(number: str, format: FloatingPointFormat = float32) -> s
         if bit == '.':
             point_app = index
 
-    exponent = point_app - one_app
-    if exponent > 0:
-        exponent -= 1
+    exponent = point_app - one_app - 1
     exponent += format.bias
-    exponent_binary = dec_int_to_bin(exponent)
+    exponent_bin = dec_int_to_bin(exponent)
 
     binary_number = binary_number.replace('.', '')
     if exponent-format.bias >= 0:
@@ -97,30 +110,32 @@ def dec_to_bin_ieee_754(number: str, format: FloatingPointFormat = float32) -> s
         binary_number += str(bit)
         fractional_part -= bit
     if len(binary_number) > format.fraction:
-        # Rounding
         # If grs > 100 round up
         # If grs < 100 truncate
         # If grs = 100 take LSB if it is 1 round up, otherwise truncate (i.e. round ties to even) 
         grs = binary_number[format.fraction:format.fraction+3]
         binary_number = binary_number[:format.fraction]
-        if int(grs) > 100 or binary_number[-1] == '1':
+        if int(grs) > 100 or (int(grs) == 100 and binary_number[-1] == '1'):
             binary_number = int(binary_number, base=2) + 1
             binary_number = dec_int_to_bin(binary_number)
 
-    exponent_binary = '0'*(format.exponent-len(exponent_binary)) + exponent_binary
+    exponent_bin = '0'*(format.exponent-len(exponent_bin)) + exponent_bin
     binary_number = binary_number + '0'*(format.fraction-len(binary_number))
 
-    return sign_bit + exponent_binary + binary_number
+    number_bin = sign + exponent_bin + binary_number
 
-# Some numbers
-# 123456789.0
-bin = dec_to_bin_ieee_754("0.1", float64)
+    return number_bin
+
+number = "123456789.0"
+bin = dec_to_bin_ieee_754(number, float32)
 print(bin)
 print(len(bin))
-dec = bin_ieee_754_to_dec(bin, float64)
-print(f"{dec:.17f}")
+import sys
+sys.set_int_max_str_digits(10000)
+dec = bin_ieee_754_to_dec("0"+"000000000000001"+"0"*64, x86)
+print(f"{dec:e}")
 
 # Test this thing with numpy floating points
 import numpy as np
-val_64 = np.float64(0.1)
-print(val_64)
+val_32 = np.float32(number)
+print(val_32)
